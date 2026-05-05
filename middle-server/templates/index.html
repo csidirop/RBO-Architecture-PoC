@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Image Access PoC</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3f6fb;
+        --panel: #ffffff;
+        --text: #132238;
+        --muted: #5e6d81;
+        --accent: #1459c7;
+        --accent-soft: #dce9ff;
+        --alert: #9d1f1f;
+        --alert-soft: #fce3e3;
+        --border: #d8e2ef;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      section {
+        margin-bottom: 10px;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Segoe UI", Tahoma, sans-serif;
+        background:
+          radial-gradient(circle at top right, #d9e9ff, transparent 26%),
+          linear-gradient(180deg, #f8fbff 0%, var(--bg) 100%);
+        color: var(--text);
+      }
+
+      main {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 32px 20px 48px;
+      }
+
+      h1,
+      h2 {
+        margin-top: 0;
+      }
+
+      .main,
+      .box {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 24px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 20px;
+      }
+
+      .meta {
+        color: var(--muted);
+      }
+
+      .alert {
+        margin-bottom: 10px;
+        padding: 16px 18px;
+        border-radius: 14px;
+        background: var(--alert-soft);
+        color: var(--alert);
+        border: 1px solid #f4b7b7;
+      }
+
+      .pill {
+        display: inline-block;
+        margin: 0 8px 8px 0;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 14px;
+      }
+
+      .actions a {
+        display: inline-block;
+        text-decoration: none;
+        border-radius: 12px;
+        padding: 10px 14px;
+        background: var(--accent);
+        color: #fff;
+      }
+
+      .file-list {
+        align-items: stretch;
+      }
+
+      .file-box {
+        display: block;
+        min-width: 220px;
+        padding: 14px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: #f8fbff;
+        color: var(--text);
+        text-decoration: none;
+        transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+      }
+
+      .file-box:hover,
+      .file-box:focus-visible {
+        transform: translateY(-1px);
+        border-color: var(--accent);
+        box-shadow: 0 10px 24px rgba(20, 47, 84, 0.12);
+        outline: none;
+      }
+
+      .file-box strong {
+        display: block;
+        margin-bottom: 10px;
+      }
+
+      .actions a.secondary {
+        background: transparent;
+        color: var(--accent);
+        border: 1px solid var(--accent);
+      }
+
+      .actions,
+      .file-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      code {
+        background: #edf3fb;
+        padding: 2px 6px;
+        border-radius: 6px;
+      }
+
+      ul {
+        padding-left: 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="main">
+        <h1>Image Access PoC</h1>
+        <p>
+          Keycloak authenticates the user, this PHP middle service applies the policy,
+          and the Apache file server accepts only a short-lived HMAC JWT that is
+          bound to one file.
+        </p>
+        <p class="meta">
+          user must have the role <code><?= h($requiredRole) ?></code>.
+          File token lifetime: <code><?= (int) $fileTokenTtl ?></code> seconds.
+        </p>
+      </section>
+
+      <!-- Error/Warning Message -->
+      <?php if ($errorMessage !== null && $errorMessage !== ''): ?>
+      <div class="alert"><?= h($errorMessage) ?></div>
+      <?php endif; ?>
+
+      <!-- Info Boxes -->
+      <section class="grid">
+        <article class="box">
+          <h2>Demo Accounts</h2>
+          <ul>
+            <li><strong>reader / reader123</strong> can request protected files.</li>
+            <li><strong>blocked / blocked123</strong> can log in but will be denied by policy.</li>
+            <li><strong>admin / admin</strong> opens the Keycloak admin console.</li>
+          </ul>
+          <p class="meta">
+            These demo users are auto-created from the Keycloak realm import when
+            the PoC starts with a fresh Keycloak container.
+          </p>
+        </article>
+
+        <article class="box">
+          <h2>Flow</h2>
+          <ol>
+            <li>User signs in with Keycloak.</li>
+            <li>Middle service checks the Keycloak role.</li>
+            <li>Middle service redirects to Apache with an HMAC JWT.</li>
+            <li>Apache/PHP validates the token and streams the file.</li>
+          </ol>
+        </article>
+      </section>
+
+      <!-- Files -->
+      <section class="box">
+        <h2>Protected Files</h2>
+        <p class="meta">
+          Links for quick testing. The middle-service links will start the Keycloak login flow first if the user is not signed in yet.
+        </p>
+        <p class="meta">
+          If the role is missing, the request stops here. If the file token is missing or expired, Apache redirects to its error page.
+        </p>
+        <!-- Build file list from $files array: -->
+        <?php if ($files !== []): ?>
+        <div class="file-list">
+          <?php foreach ($files as $file): ?>
+          <a class="file-box" href="<?= h(request_file_url($file)) ?>">
+            <strong><?= h($file) ?></strong>
+            <span class="meta">Open "protected" file</span>
+          </a>
+          <?php endforeach; ?>
+        </div>
+        <?php else: ?> <p>No sample files are mounted.</p> <?php endif; ?>
+      </section>
+
+      <!-- Auth info -->
+      <section class="box">
+        <?php if ($user !== null): ?>
+        <h2>Current Session</h2>
+        <p>
+          Signed in as <strong><?= h((string) ($user['preferred_username'] ?? 'unknown')) ?></strong>
+          <?php if (!empty($user['email'])): ?>(<?= h((string) $user['email']) ?>)<?php endif; ?>
+        </p>
+        <div>
+          <?php
+          $roles = $user['roles'] ?? [];
+          if (is_array($roles) && $roles !== []):
+              foreach ($roles as $role):
+          ?>
+            <span class="pill"><?= h((string) $role) ?></span>
+          <?php
+              endforeach;
+          else:
+          ?>
+            <span class="pill">no realm roles</span>
+          <?php endif; ?>
+        </div>
+
+        <p class="actions" style="margin-top: 20px;">
+          <a class="secondary" href="<?= h($logoutUrl) ?>">Log out</a>
+        </p>
+        <?php else: ?>
+        <h2>Start</h2>
+        <p class="meta">
+          Open the login flow first, then come back here and request a protected file.
+        </p>
+        <p class="actions">
+          <a href="<?= h($loginUrl) ?>">Log in with Keycloak</a>
+          <a class="secondary" href="<?= h($keycloakAdminUrl) ?>" target="_blank" rel="noreferrer">Open Keycloak Admin</a>
+        </p>
+        <?php endif; ?>
+      </section>
+    </main>
+  </body>
+</html>

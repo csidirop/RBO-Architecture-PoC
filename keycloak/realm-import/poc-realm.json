@@ -1,0 +1,87 @@
+{
+  "realm": "image-poc",
+  "enabled": true,
+  "displayName": "Image Access PoC",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "roles": {
+    "realm": [
+      {
+        "name": "image-reader",
+        "description": "Can request protected files"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "middle-poc",
+      "name": "Middle Service PoC",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "middle-secret-please-change",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:8080/callback"
+      ],
+      "webOrigins": [
+        "http://localhost:8080"
+      ],
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "roles",
+        "profile",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access",
+        "microprofile-jwt"
+      ],
+      "attributes": {
+        "post.logout.redirect.uris": "http://localhost:8080/*"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "reader",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Demo",
+      "lastName": "Reader",
+      "email": "reader@example.com",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "reader123",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "image-reader"
+      ]
+    },
+    {
+      "username": "blocked",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Demo",
+      "lastName": "Blocked",
+      "email": "blocked@example.com",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "blocked123",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}

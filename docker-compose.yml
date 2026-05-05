@@ -1,0 +1,48 @@
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./keycloak/realm-import:/opt/keycloak/data/import:ro
+    ports:
+      - "8081:8080"
+
+  middle:
+    build:
+      context: ./middle-server
+    depends_on:
+      - keycloak
+    environment:
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-replace-this-session-secret}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8080}
+      KEYCLOAK_BROWSER_BASE_URL: ${KEYCLOAK_BROWSER_BASE_URL:-http://localhost:8081}
+      KEYCLOAK_INTERNAL_BASE_URL: ${KEYCLOAK_INTERNAL_BASE_URL:-http://keycloak:8080}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-image-poc}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-middle-poc}
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-middle-secret-please-change}
+      REQUIRED_ROLE: ${REQUIRED_ROLE:-image-reader}
+      FILES_BASE_URL: ${FILES_BASE_URL:-http://localhost:8090}
+      FILES_DIRECTORY: /data/files
+      FILE_TOKEN_SECRET: ${FILE_TOKEN_SECRET:-replace-this-hmac-secret}
+      FILE_TOKEN_TTL_SECONDS: ${FILE_TOKEN_TTL_SECONDS:-60}
+      FILE_TOKEN_ISSUER: ${FILE_TOKEN_ISSUER:-middle-poc}
+      FILE_TOKEN_AUDIENCE: ${FILE_TOKEN_AUDIENCE:-image-server}
+    volumes:
+      - ./sample-files:/data/files:ro
+    ports:
+      - "8080:80"
+
+  file-server:
+    build:
+      context: ./file-server
+    environment:
+      FILE_TOKEN_SECRET: ${FILE_TOKEN_SECRET:-replace-this-hmac-secret}
+      FILE_TOKEN_ISSUER: ${FILE_TOKEN_ISSUER:-middle-poc}
+      FILE_TOKEN_AUDIENCE: ${FILE_TOKEN_AUDIENCE:-image-server}
+    volumes:
+      - ./sample-files:/data/files:ro
+    ports:
+      - "8090:80"
