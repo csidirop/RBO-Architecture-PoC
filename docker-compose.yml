@@ -25,6 +25,7 @@ services:
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-middle-secret-please-change}
       REQUIRED_ROLE: ${REQUIRED_ROLE:-image-reader}
       FILES_BASE_URL: ${FILES_BASE_URL:-http://localhost:8090}
+      FILES_INTERNAL_BASE_URL: ${FILES_INTERNAL_BASE_URL:-http://file-server}
       FILES_DIRECTORY: /data/files
       FILE_TOKEN_SECRET: ${FILE_TOKEN_SECRET:-replace-this-hmac-secret}
       FILE_TOKEN_TTL_SECONDS: ${FILE_TOKEN_TTL_SECONDS:-60}

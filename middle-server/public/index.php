@@ -24,6 +24,8 @@ define('KEYCLOAK_CLIENT_ID', env_value('KEYCLOAK_CLIENT_ID', 'middle-poc'));
 define('KEYCLOAK_CLIENT_SECRET', env_value('KEYCLOAK_CLIENT_SECRET', 'middle-secret-please-change'));
 define('REQUIRED_ROLE', env_value('REQUIRED_ROLE', 'image-reader'));
 define('FILES_BASE_URL', rtrim(env_value('FILES_BASE_URL', 'http://localhost:8090'), '/'));
+define('FILES_INTERNAL_BASE_URL', rtrim(env_value('FILES_INTERNAL_BASE_URL', 'http://file-server'), '/'));
+define('FILES_PROXY_BASE_URL', APP_BASE_URL . '/file-gateway');
 define('FILES_DIRECTORY', env_value('FILES_DIRECTORY', '/data/files'));
 define('FILE_TOKEN_SECRET', env_value('FILE_TOKEN_SECRET', 'replace-this-hmac-secret')); // This should be set to the same value as FILE_TOKEN_SECRET in the file server configuration
 define('FILE_TOKEN_TTL_SECONDS', (int) env_value('FILE_TOKEN_TTL_SECONDS', '60')); // Time to live
@@ -61,7 +63,7 @@ function route_request(): never
     $path = (string) (parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?? '/');
 
     if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
-        render_home(405, 'Method not allowed.');
+        fail_request(405, 'Method not allowed.');
     }
 
     if ($path === '/') {
@@ -85,7 +87,7 @@ function route_request(): never
         handle_request_file($fileName);
     }
 
-    render_home(404, 'Not found.');
+    fail_request(404, 'Not found.');
 }
 
 /**
@@ -137,18 +139,18 @@ function handle_callback(): never
 {
     if (isset($_GET['error'])) {
         $message = (string) ($_GET['error_description'] ?? $_GET['error']);
-        render_home(400, 'Login failed: ' . $message);
+        fail_request(400, 'Login failed: ' . $message);
     }
 
     $state = (string) ($_GET['state'] ?? '');
     $code = (string) ($_GET['code'] ?? '');
 
     if ($state === '' || $state !== ($_SESSION['oidc_state'] ?? null)) {
-        render_home(400, 'Invalid OIDC state.');
+        fail_request(400, 'Invalid OIDC state.');
     }
 
     if ($code === '') {
-        render_home(400, 'Missing authorization code.');
+        fail_request(400, 'Missing authorization code.');
     }
 
     unset($_SESSION['oidc_state']);
@@ -168,7 +170,7 @@ function handle_callback(): never
         $accessClaims = decode_unverified_jwt((string) ($tokenData['access_token'] ?? ''));
         $idClaims = decode_unverified_jwt((string) ($tokenData['id_token'] ?? ''));
     } catch (RuntimeException $exception) {
-        render_home(502, 'Keycloak communication failed: ' . $exception->getMessage());
+        fail_request(502, 'Keycloak communication failed: ' . $exception->getMessage());
     }
 
     $roles = $accessClaims['realm_access']['roles'] ?? [];
@@ -227,13 +229,22 @@ function handle_logout(): never
  * - Ensures the requested file is real and safely inside the mounted file area
  * - Ensures the authenticated user has the required Keycloak realm role
  *
- * Once those checks pass, it creates a short-lived JWT that is scoped to the resolved file name. The browser is then
- * redirected to the Apache file server, which independently validates that JWT before serving bytes.
+ * Once those checks pass, it creates a short-lived JWT that is scoped to the resolved file name.
+ *
+ * The handler supports two delivery modes:
+ * - browser navigation: fetch the protected file from the file server with a Bearer
+ *   header and stream it back to the browser
+ * - API / fetch callers: return JSON metadata containing a Bearer token plus the
+ *   proxy and direct download URLs
  *
  * The security model here is intentionally split:
  * - Keycloak authenticates the user
  * - The middle service decides whether the user may request a file
  * - The file server trusts only the signed HMAC token, not the browser session
+ *
+ * Returning JSON here is what makes the future API use case possible: the middle
+ * server can keep user authentication and policy decisions, while the file server
+ * becomes a standalone resource server that validates only the issued file token.
  * 
  * @return never
  */
@@ -241,12 +252,19 @@ function handle_request_file(string $fileName): never
 {
     $user = $_SESSION['user'] ?? null;
     if (!is_array($user)) {
+        if (request_wants_json()) {
+            json_response([
+                'error' => 'Authentication required.',
+                'login_url' => '/login',
+            ], 401);
+        }
+
         redirect_to('/login');
     }
 
     $resolved = resolve_file($fileName);
     if ($resolved === null) {
-        render_home(404, 'Requested file not found.');
+        fail_request(404, 'Requested file not found.');
     }
 
     $roles = $user['roles'] ?? [];
@@ -255,7 +273,7 @@ function handle_request_file(string $fileName): never
     }
 
     if (REQUIRED_ROLE !== '' && !in_array(REQUIRED_ROLE, $roles, true)) {
-        render_home(
+        fail_request(
             403,
             'Authenticated, but policy denied access. Required role: ' . REQUIRED_ROLE . '.'
         );
@@ -263,10 +281,22 @@ function handle_request_file(string $fileName): never
 
     $safeFileName = basename($resolved);
     $token = build_file_token($user, $safeFileName);
-    $targetUrl = FILES_BASE_URL . '/protected/' . rawurlencode($safeFileName)
-        . '?' . http_build_query(['token' => $token]);
+    $directDownloadUrl = FILES_BASE_URL . '/protected/' . rawurlencode($safeFileName);
+    $proxyDownloadUrl = FILES_PROXY_BASE_URL . '/protected/' . rawurlencode($safeFileName);
 
-    redirect_to($targetUrl);
+    if (request_wants_json()) {
+        json_response([
+            'file' => $safeFileName,
+            'access_token' => $token,
+            'proxy_download_url' => $proxyDownloadUrl,
+            'direct_download_url' => $directDownloadUrl,
+            'error_url' => FILES_PROXY_BASE_URL . '/error.html',
+            'expires_in' => FILE_TOKEN_TTL_SECONDS,
+            'token_type' => 'Bearer',
+        ]);
+    }
+
+    stream_file_from_server($safeFileName, $token);
 }
 
 /**
@@ -290,6 +320,7 @@ function render_home(int $statusCode = 200, ?string $errorMessage = null): never
     $files = list_available_files();
     $requiredRole = REQUIRED_ROLE;
     $fileTokenTtl = FILE_TOKEN_TTL_SECONDS;
+    $directFilesBaseUrl = FILES_BASE_URL;
     $loginUrl = '/login';
     $logoutUrl = '/logout';
     $keycloakAdminUrl = KEYCLOAK_BROWSER_BASE_URL . '/admin/';
@@ -549,6 +580,119 @@ function browser_oidc_endpoint(string $name): string
 function internal_oidc_endpoint(string $name): string
 {
     return KEYCLOAK_INTERNAL_BASE_URL . '/realms/' . rawurlencode(KEYCLOAK_REALM) . '/protocol/openid-connect/' . $name;
+}
+
+/**
+ * Returns whether the caller explicitly asked for a JSON API response.
+ *
+ * API callers use this to request token metadata without triggering the normal
+ * browser streaming flow.
+ *
+ * @return bool `true` when the current request should receive JSON.
+ */
+function request_wants_json(): bool
+{
+    $format = strtolower((string) ($_GET['format'] ?? ''));
+    if ($format === 'json') {
+        return true;
+    }
+
+    $accept = strtolower((string) ($_SERVER['HTTP_ACCEPT'] ?? ''));
+    return str_contains($accept, 'application/json');
+}
+
+/**
+ * Serializes a small JSON payload and terminates the request.
+ *
+ * @param array<string, mixed> $payload
+ * @return never
+ */
+function json_response(array $payload, int $statusCode = 200): never
+{
+    http_response_code($statusCode);
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
+    echo (string) json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
+/**
+ * Ends the current request in the response format expected by the caller.
+ *
+ * Browser navigation keeps using the HTML landing page, while XHR/fetch callers
+ * receive machine-readable JSON with the same message and status code.
+ *
+ * @return never
+ */
+function fail_request(int $statusCode, string $message): never
+{
+    if (request_wants_json()) {
+        json_response(['error' => $message], $statusCode);
+    }
+
+    render_home($statusCode, $message);
+}
+
+/**
+ * Fetches a protected file from the file server with a Bearer token and streams
+ * the response back to the browser.
+ *
+ * This keeps the file token out of the browser-visible URL for normal page
+ * navigation. The browser only sees the middle-service route, while the middle
+ * service performs the header-based handoff to the file server on the server side.
+ *
+ * @return never
+ */
+function stream_file_from_server(string $fileName, string $token): never
+{
+    $url = FILES_INTERNAL_BASE_URL . '/protected/' . rawurlencode($fileName);
+    $context = stream_context_create([
+        'http' => [
+            'method' => 'GET',
+            'header' => implode("\r\n", [
+                'Accept: */*',
+                'Authorization: Bearer ' . $token,
+            ]),
+            'timeout' => 30,
+            'ignore_errors' => true,
+        ],
+    ]);
+
+    $stream = @fopen($url, 'rb', false, $context);
+    $headers = $http_response_header ?? [];
+    $statusCode = http_status_code_from_headers($headers);
+
+    if ($stream === false || $statusCode < 200 || $statusCode >= 300) {
+        if ($statusCode === 401 || $statusCode === 403 || $statusCode === 404) {
+            redirect_to(FILES_PROXY_BASE_URL . '/error.html');
+        }
+
+        fail_request(502, 'The file server could not deliver the requested file.');
+    }
+
+    http_response_code($statusCode);
+    foreach ($headers as $header) {
+        if (
+            stripos($header, 'Content-Type:') === 0 ||
+            stripos($header, 'Content-Length:') === 0 ||
+            stripos($header, 'Content-Disposition:') === 0 ||
+            stripos($header, 'Cache-Control:') === 0
+        ) {
+            header($header, true);
+        }
+    }
+
+    while (!feof($stream)) {
+        $chunk = fread($stream, 8192);
+        if ($chunk === false) {
+            break;
+        }
+
+        echo $chunk;
+    }
+
+    fclose($stream);
+    exit;
 }
 
 /**

@@ -13,7 +13,7 @@ This repository contains a small Docker Compose proof of concept for this flow:
 - The PHP middle service is both the landing page and the policy decision point.
 - The policy is only a Keycloak role check.
 - The file token is a shared-secret HMAC JWT instead of a full external PDP policy artifact.
-- Apache validates the token through a small PHP gate instead of a dedicated Apache auth module.
+- Apache currently validates the token through a small PHP gate that accepts the file token only from the `Authorization: Bearer ...` header.
 
 ## How the PoC Works
 
@@ -62,13 +62,14 @@ When the user requests a file, the middle service becomes the simplified policy 
    - the resolved file path stays inside the mounted file directory
    - the user has the required Keycloak realm role, currently `image-reader`
 4. If the user is allowed, the middle service creates a short-lived HS256 JWT that is valid only for that exact file.
-5. The middle service redirects the browser to:
-   - `http://localhost:8090/protected/<file>?token=<jwt>`
+5. The middle service supports two header-based handoff modes:
+   - browser mode: `/request-file/<name>` streams the file back after a server-side Bearer-token request to the file server
+   - API mode: return JSON metadata with a Bearer token plus download URLs
 
 Important functions for this part:
 
 - `handle_request_file()` in `middle-server/public/index.php`
-  - Applies policy and performs the redirect to the file server
+  - Applies policy and either returns JSON token metadata or streams the file back to the browser
 - `resolve_file()` in `middle-server/public/index.php`
   - Prevents path traversal and ensures the file stays inside the allowed directory
 - `build_file_token()` in `middle-server/public/index.php`
@@ -92,7 +93,7 @@ The file server does not trust the PHP session from the middle service and does 
 
 Apache routes `/protected/<file>` into `serve.php`, which performs the validation in stages:
 
-1. Read the requested file path and the `token` query parameter.
+1. Read the requested file path and the incoming `Authorization: Bearer <jwt>` token.
 2. Validate the JWT structure and the HS256 signature.
 3. Validate the claims:
    - expected issuer
@@ -115,10 +116,9 @@ Important functions for this part:
 
 ### Example Token
 
-That is an example url: `http://localhost:8090/protected/1652989927_0002.jpg?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJtaWRkbGUtcG9jIiwiYXVkIjoiaW1hZ2Utc2VydmVyIiwic3ViIjoiMmQ1NGM3Y2EtYzE4MC00NGYxLWEyOTMtZjliOGQxMTFiYjBmIiwicHJlZmVycmVkX3VzZXJuYW1lIjoicmVhZGVyIiwiZmlsZSI6IjE2NTI5ODk5MjdfMDAwMi5qcGciLCJpYXQiOjE3NzgwNjg0NTUsIm5iZiI6MTc3ODA2ODQ1NSwiZXhwIjoxNzc4MDY4NTE1LCJqdGkiOiI0d1JrTDBJREU5YyJ9.RNQKGqhR0gcYqypdcbLqaqPFcAJH1jaR4qXIvnTfadE`
+That is an example request target: `http://localhost:8090/protected/1652989927_0002.jpg`
 
-
-The actual token sent to the file server is the part after `token=`, which is a compact JWT string:
+The actual token sent to the file server is the JWT itself in the `Authorization: Bearer ...` header:
 
 ```text
 eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJtaWRkbGUtcG9jIiwiYXVkIjoiaW1hZ2Utc2VydmVyIiwic3ViIjoiMmQ1NGM3Y2EtYzE4MC00NGYxLWEyOTMtZjliOGQxMTFiYjBmIiwicHJlZmVycmVkX3VzZXJuYW1lIjoicmVhZGVyIiwiZmlsZSI6IjE2NTI5ODk5MjdfMDAwMi5qcGciLCJpYXQiOjE3NzgwNjg0NTUsIm5iZiI6MTc3ODA2ODQ1NSwiZXhwIjoxNzc4MDY4NTE1LCJqdGkiOiI0d1JrTDBJREU5YyJ9.RNQKGqhR0gcYqypdcbLqaqPFcAJH1jaR4qXIvnTfadE
@@ -149,7 +149,7 @@ Below is the decoded payload of that token, which is the second part of the JWT:
 
 To inspect a live token in the browser:
 
-1. Open a protected file url and copy the `token=...` query parameter on the request of the redirected URL `http://localhost:8090/protected/...`.
+1. Open a protected file request and copy the `Authorization: Bearer ...` header on the request to `http://localhost:8090/protected/...`.
 2. Split it by `.` into three parts.
 3. Decode the first part from Base64URL to JSON.
 4. Decode the second part from Base64URL to JSON.

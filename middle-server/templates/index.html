@@ -151,8 +151,8 @@
         <h1>Image Access PoC</h1>
         <p>
           Keycloak authenticates the user, this PHP middle service applies the policy,
-          and the Apache file server accepts only a short-lived HMAC JWT that is
-          bound to one file.
+          and the Apache file server validates a short-lived file token before it
+          serves protected content.
         </p>
         <p class="meta">
           user must have the role <code><?= h($requiredRole) ?></code>.
@@ -185,8 +185,8 @@
           <ol>
             <li>User signs in with Keycloak.</li>
             <li>Middle service checks the Keycloak role.</li>
-            <li>Middle service redirects to Apache with an HMAC JWT.</li>
-            <li>Apache/PHP validates the token and streams the file.</li>
+            <li>Middle service mints a short-lived file token for one file.</li>
+            <li>Apache validates that token and serves the file.</li>
           </ol>
         </article>
       </section>
@@ -195,10 +195,10 @@
       <section class="box">
         <h2>Protected Files</h2>
         <p class="meta">
-          Links for quick testing. The middle-service links will start the Keycloak login flow first if the user is not signed in yet.
+          Links for quick testing. Browser clicks stay on the middle-service route, which streams the file back after a header-based handoff to the file server. If no session exists yet, the link falls back to the normal login redirect.
         </p>
         <p class="meta">
-          If the role is missing, the request stops here. If the file token is missing or expired, Apache redirects to its error page.
+          Browser navigation never needs the token in the URL. API clients can still call <code><?= h($directFilesBaseUrl) ?>/protected/&lt;file&gt;</code> directly with <code>Authorization: Bearer &lt;token&gt;</code>.
         </p>
         <!-- Build file list from $files array: -->
         <?php if ($files !== []): ?>
@@ -251,5 +251,7 @@
         <?php endif; ?>
       </section>
     </main>
+    <?php if ($user !== null): ?>
+    <?php endif; ?>
   </body>
 </html>

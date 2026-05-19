@@ -102,13 +102,20 @@ function verify_hs256_jwt(string $jwt, string $secret): ?array
 }
 
 $requestedFile = $_GET['file'] ?? '';
-$token = $_GET['token'] ?? '';
+$token = '';
 
 if ($requestedFile === '') {
     $path = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH);
     if (is_string($path) && str_starts_with($path, '/protected/')) {
         $requestedFile = rawurldecode(substr($path, strlen('/protected/')));
     }
+}
+
+// Read the file token only from the Authorization header so browser-visible URLs
+// and copied links never contain bearer material.
+$authorization = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '';
+if (is_string($authorization) && preg_match('/^\s*Bearer\s+(.+)\s*$/i', $authorization, $matches) === 1) {
+    $token = trim($matches[1]);
 }
 
 if ($baseDir === false) {
