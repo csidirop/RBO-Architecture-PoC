@@ -155,6 +155,53 @@ To inspect a live token in the browser:
 4. Decode the second part from Base64URL to JSON.
 5. The third part is the HMAC signature.
 
+### Generate a Test Token in Bash
+
+For manual CLI tests, you can generate a valid PoC file token directly in Bash with `openssl`:
+
+```bash
+jwt_b64url() {
+  openssl base64 -A | tr '+/' '-_' | tr -d '='
+}
+
+make_file_token() {
+  local file="${1:?file required}"
+  local sub="${2:-cli-test}"
+  local user="${3:-cli-test}"
+  local secret="${FILE_TOKEN_SECRET:-replace-this-hmac-secret}"
+  local iss="${FILE_TOKEN_ISSUER:-middle-poc}"
+  local aud="${FILE_TOKEN_AUDIENCE:-image-server}"
+  local now exp header payload header_b64 payload_b64 signing_input sig
+
+  now=$(date +%s)
+  exp=$((now + 300))
+
+  header='{"alg":"HS256","typ":"JWT"}'
+  payload=$(printf '{"iss":"%s","aud":"%s","sub":"%s","preferred_username":"%s","file":"%s","iat":%s,"nbf":%s,"exp":%s,"jti":"manual-cli-test"}' \
+    "$iss" "$aud" "$sub" "$user" "$file" "$now" "$now" "$exp")
+
+  header_b64=$(printf '%s' "$header" | jwt_b64url)
+  payload_b64=$(printf '%s' "$payload" | jwt_b64url)
+  signing_input="${header_b64}.${payload_b64}"
+
+  sig=$(printf '%s' "$signing_input" \
+    | openssl dgst -sha256 -binary -hmac "$secret" \
+    | jwt_b64url)
+
+  printf '%s.%s\n' "$signing_input" "$sig"
+}
+```
+
+Example usage:
+
+```bash
+TOKEN=$(make_file_token "1652989927_0002.jpg")
+curl -H "Authorization: Bearer $TOKEN" \
+  -I http://localhost:8090/protected/1652989927_0002.jpg
+```
+
+The file name in the JWT must exactly match the requested file path, and the `FILE_TOKEN_SECRET`, `FILE_TOKEN_ISSUER`, and `FILE_TOKEN_AUDIENCE` values must match the running Docker setup.
+
 ## Run It
 
 Run the following command in the terminal:
