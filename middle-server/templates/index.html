@@ -150,9 +150,9 @@
       <section class="main">
         <h1>Image Access PoC</h1>
         <p>
-          Keycloak authenticates the user, this PHP middle service applies the policy,
-          and the Apache file server validates a short-lived file token before it
-          serves protected content.
+          Apache on the middle server authenticates the user with Keycloak, this
+          PHP app applies the local policy, and the Apache file server validates
+          a short-lived bearer token before it serves protected content.
         </p>
         <p class="meta">
           user must have the role <code><?= h($requiredRole) ?></code>.
@@ -172,7 +172,7 @@
           <ul>
             <li><strong>reader / reader123</strong> can request protected files.</li>
             <li><strong>blocked / blocked123</strong> can log in but will be denied by policy.</li>
-            <li><strong>admin / admin</strong> opens the Keycloak admin console.</li>
+            <li><strong>admin / admin</strong> opens the Keycloak admin console at port 8081.</li>
           </ul>
           <p class="meta">
             These demo users are auto-created from the Keycloak realm import when
@@ -184,9 +184,10 @@
           <h2>Flow</h2>
           <ol>
             <li>User signs in with Keycloak.</li>
+            <li>Apache forwards authenticated identity claims to the middle service.</li>
             <li>Middle service checks the Keycloak role.</li>
             <li>Middle service mints a short-lived file token for one file.</li>
-            <li>Apache validates that token and serves the file.</li>
+            <li>Apache on the file server validates that token and serves the file.</li>
           </ol>
         </article>
       </section>
@@ -237,15 +238,16 @@
         </div>
 
         <p class="actions" style="margin-top: 20px;">
+          <a class="secondary" href="/app">Open Authenticated View</a>
           <a class="secondary" href="<?= h($logoutUrl) ?>">Log out</a>
         </p>
         <?php else: ?>
         <h2>Start</h2>
         <p class="meta">
-          Open the login flow first, then come back here and request a protected file.
+          Open the authenticated view first, or click any protected file directly and Apache will start the Keycloak login flow for you.
         </p>
         <p class="actions">
-          <a href="<?= h($loginUrl) ?>">Log in with Keycloak</a>
+          <a href="<?= h($loginUrl) ?>">Open Authenticated View</a>
           <a class="secondary" href="<?= h($keycloakAdminUrl) ?>" target="_blank" rel="noreferrer">Open Keycloak Admin</a>
         </p>
         <?php endif; ?>

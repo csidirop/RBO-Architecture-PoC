@@ -2,11 +2,11 @@
 declare(strict_types=1);
 
 /**
- * Reads a required runtime setting from the environment and falls back to a safe local default when the variable is unset.
- * * 
- * @param $name The name of the environment variable to read
- * @param $default The default value to use if the variable is not set or empty
- * @return string The value of the environment variable, or the default if not set
+ * Reads a runtime setting from the environment and falls back to a default.
+ *
+ * @param string $name Environment variable name
+ * @param string $default Default value when unset
+ * @return string
  */
 function env_value(string $name, string $default): string
 {
@@ -14,48 +14,34 @@ function env_value(string $name, string $default): string
     return $value === false || $value === '' ? $default : $value;
 }
 
-// Define all configuration constants at the top of the script for easy reference and modification:
-define('APP_SECRET_KEY', env_value('APP_SECRET_KEY', 'replace-this-session-secret')); // Used for session encryption and should be set to a strong random value in production
 define('APP_BASE_URL', rtrim(env_value('APP_BASE_URL', 'http://localhost:8080'), '/'));
 define('KEYCLOAK_BROWSER_BASE_URL', rtrim(env_value('KEYCLOAK_BROWSER_BASE_URL', 'http://localhost:8081'), '/'));
-define('KEYCLOAK_INTERNAL_BASE_URL', rtrim(env_value('KEYCLOAK_INTERNAL_BASE_URL', 'http://keycloak:8080'), '/'));
 define('KEYCLOAK_REALM', env_value('KEYCLOAK_REALM', 'image-poc'));
-define('KEYCLOAK_CLIENT_ID', env_value('KEYCLOAK_CLIENT_ID', 'middle-poc'));
-define('KEYCLOAK_CLIENT_SECRET', env_value('KEYCLOAK_CLIENT_SECRET', 'middle-secret-please-change'));
 define('REQUIRED_ROLE', env_value('REQUIRED_ROLE', 'image-reader'));
 define('FILES_BASE_URL', rtrim(env_value('FILES_BASE_URL', 'http://localhost:8090'), '/'));
 define('FILES_INTERNAL_BASE_URL', rtrim(env_value('FILES_INTERNAL_BASE_URL', 'http://file-server'), '/'));
-define('FILES_PROXY_BASE_URL', APP_BASE_URL . '/file-gateway');
 define('FILES_DIRECTORY', env_value('FILES_DIRECTORY', '/data/files'));
-define('FILE_TOKEN_SECRET', env_value('FILE_TOKEN_SECRET', 'replace-this-hmac-secret')); // This should be set to the same value as FILE_TOKEN_SECRET in the file server configuration
-define('FILE_TOKEN_TTL_SECONDS', (int) env_value('FILE_TOKEN_TTL_SECONDS', '60')); // Time to live
-define('FILE_TOKEN_ISSUER', env_value('FILE_TOKEN_ISSUER', 'middle-poc')); // The issuer claim in the file token, which should be set to a unique value for this service
-define('FILE_TOKEN_AUDIENCE', env_value('FILE_TOKEN_AUDIENCE', 'image-server')); // The audience claim in the file token, which should match what the file server expects
+define('FILE_TOKEN_SECRET', env_value('FILE_TOKEN_SECRET', 'replace-this-hmac-secret'));
+define('FILE_TOKEN_TTL_SECONDS', (int) env_value('FILE_TOKEN_TTL_SECONDS', '60'));
+define('FILE_TOKEN_ISSUER', env_value('FILE_TOKEN_ISSUER', 'middle-poc'));
+define('FILE_TOKEN_AUDIENCE', env_value('FILE_TOKEN_AUDIENCE', 'image-server'));
+define('OIDC_CALLBACK_PATH', env_value('OIDC_CALLBACK_PATH', '/oidc/callback'));
 define('TEMPLATE_HOME', dirname(__DIR__) . DIRECTORY_SEPARATOR . 'templates' . DIRECTORY_SEPARATOR . 'index.html');
-
-session_name('middle-poc-session');
-session_set_cookie_params([
-    'httponly' => true,
-    'path' => '/',
-    'samesite' => 'Lax',
-]);
-session_start();
 
 route_request();
 
 /**
- * Very small front-controller router for the middle service.
- * 
- * Only GET routes are supported because the browser-facing flow is redirect driven:
- * - `/` renders the landing page
- * - `/login` starts the OIDC flow
- * - `/callback` receives the authorization code from Keycloak
- * - `/logout` clears the local session and sends the browser back to Keycloak
- * - `/request-file/<name>` applies policy and mints the short-lived file token
+ * Front controller for the reduced middle service.
  *
- * Each handler terminates the request on its own, so this function is marked
- * `never` and acts as the single entry point for the script.
- * 
+ * Apache and mod_auth_openidc now own the browser authentication flow. This
+ * script only renders the landing pages, evaluates the local authorization
+ * policy, mints short-lived file tokens, and streams files back to the browser.
+ *
+ * Protected paths are enforced in Apache:
+ * - `/app`
+ * - `/request-file/<name>`
+ * - `OIDC_CALLBACK_PATH`
+ *
  * @return never
  */
 function route_request(): never
@@ -66,20 +52,8 @@ function route_request(): never
         fail_request(405, 'Method not allowed.');
     }
 
-    if ($path === '/') {
+    if ($path === '/' || $path === '/app') {
         render_home();
-    }
-
-    if ($path === '/login') {
-        handle_login();
-    }
-
-    if ($path === '/callback') {
-        handle_callback();
-    }
-
-    if ($path === '/logout') {
-        handle_logout();
     }
 
     if (str_starts_with($path, '/request-file/')) {
@@ -91,175 +65,25 @@ function route_request(): never
 }
 
 /**
- * Starts the browser OIDC authorization-code flow against Keycloak.
+ * Applies the local access policy and mints a file-specific JWT.
  *
- * The most important value here is `state`, which is stored in the local session and later compared in `handle_callback()`. 
- * That comparison protects the callback from CSRF-style login injection and from stale browser tabs replaying an old 
- * authorization response.
- * 
- * @return never
- */
-function handle_login(): never
-{
-    $_SESSION['oidc_state'] = base64url_encode(random_bytes(24)); // Generate a random state value for this login attempt and store it in the session for later verification in the callback handler.
-
-    $params = http_build_query([
-        'client_id' => KEYCLOAK_CLIENT_ID,
-        'redirect_uri' => APP_BASE_URL . '/callback',
-        'response_type' => 'code',
-        'scope' => 'openid profile email',
-        'state' => $_SESSION['oidc_state'],
-    ]);
-
-    redirect_to(browser_oidc_endpoint('auth') . '?' . $params);
-}
-
-/**
- * Completes the OIDC browser login after Keycloak redirects back with a code.
+ * Browser authentication is already complete when this handler runs. Apache has
+ * authenticated the user with Keycloak and passed the identity material to PHP
+ * through environment variables and request metadata. This function then:
+ * - reconstructs the current user from Apache-provided identity data
+ * - checks the requested file is real and inside the mounted sample directory
+ * - checks the configured Keycloak role
+ * - creates a short-lived HMAC bearer token for the file server
+ * - either returns JSON token metadata or performs a server-side Bearer-token
+ *   request to the file server and streams the file back to the browser
  *
- * 1. Validate the returned `state` against the locally stored nonce.
- * 2. Exchange the authorization code for tokens on Keycloak's internal URL.
- * 3. Decode the returned JWT payloads without verifying them locally.
- * 4. Read identity claims from the `id_token` and authorization roles from the `access_token`.
- * 5. Persist the normalized user record in the PHP session for later requests.
- *
- * A few design choices are intentional:
- * - We use the `id_token` for identity data because it is meant for the client.
- * - We use the `access_token` for realm roles because that is where Keycloak exposes authorization data for this PoC.
- * - We do not call `/userinfo` here anymore because the previous version added an extra network hop and became the main 
- *   failure point during login.
- *
- * In a production system we would normally verify token signatures, issuer, audience, and nonce more rigorously.
- * For this PoC the middle service already trusts the direct token response from Keycloak and keeps the implementation
- * intentionally small. But the `decode_unverified_jwt()` helper is available if more local validation is desired in the future.
- * 
- * @return never
- */
-function handle_callback(): never
-{
-    if (isset($_GET['error'])) {
-        $message = (string) ($_GET['error_description'] ?? $_GET['error']);
-        fail_request(400, 'Login failed: ' . $message);
-    }
-
-    $state = (string) ($_GET['state'] ?? '');
-    $code = (string) ($_GET['code'] ?? '');
-
-    if ($state === '' || $state !== ($_SESSION['oidc_state'] ?? null)) {
-        fail_request(400, 'Invalid OIDC state.');
-    }
-
-    if ($code === '') {
-        fail_request(400, 'Missing authorization code.');
-    }
-
-    unset($_SESSION['oidc_state']);
-
-    try {
-        $tokenData = http_post_form_json(
-            internal_oidc_endpoint('token'),
-            [
-                'grant_type' => 'authorization_code',
-                'client_id' => KEYCLOAK_CLIENT_ID,
-                'client_secret' => KEYCLOAK_CLIENT_SECRET,
-                'code' => $code,
-                'redirect_uri' => APP_BASE_URL . '/callback',
-            ]
-        );
-
-        $accessClaims = decode_unverified_jwt((string) ($tokenData['access_token'] ?? ''));
-        $idClaims = decode_unverified_jwt((string) ($tokenData['id_token'] ?? ''));
-    } catch (RuntimeException $exception) {
-        fail_request(502, 'Keycloak communication failed: ' . $exception->getMessage());
-    }
-
-    $roles = $accessClaims['realm_access']['roles'] ?? [];
-    if (!is_array($roles)) {
-        $roles = [];
-    }
-    sort($roles);
-
-    $userClaims = $idClaims !== [] ? $idClaims : $accessClaims;
-
-    $_SESSION['user'] = [
-        'sub' => (string) ($userClaims['sub'] ?? ''),
-        'name' => $userClaims['name'] ?? null,
-        'preferred_username' => (string) (
-            $userClaims['preferred_username']
-            ?? $userClaims['email']
-            ?? $userClaims['sub']
-            ?? 'unknown'
-        ),
-        'email' => $userClaims['email'] ?? null,
-        'roles' => $roles,
-    ];
-
-    redirect_to('/');
-}
-
-/**
- * Clears the local application session and delegates identity logout to Keycloak.
- *
- * The local session is removed first so that the PoC immediately forgets the current user even if the user closes the browser 
- * before the IdP logout flow completes.
- * 
- * @return never
- */
-function handle_logout(): never
-{
-    $_SESSION = [];
-    if (session_id() !== '') {
-        session_destroy();
-    }
-
-    $params = http_build_query([
-        'client_id' => KEYCLOAK_CLIENT_ID,
-        'post_logout_redirect_uri' => APP_BASE_URL . '/',
-    ]);
-
-    redirect_to(browser_oidc_endpoint('logout') . '?' . $params);
-}
-
-/**
- * Applies the local access policy and mints a file-specific HMAC JWT.
- *
- * This function is the "policy decision point" of the reduced architecture.
- * It does three things:
- * - Ensures a browser session exists
- * - Ensures the requested file is real and safely inside the mounted file area
- * - Ensures the authenticated user has the required Keycloak realm role
- *
- * Once those checks pass, it creates a short-lived JWT that is scoped to the resolved file name.
- *
- * The handler supports two delivery modes:
- * - browser navigation: fetch the protected file from the file server with a Bearer
- *   header and stream it back to the browser
- * - API / fetch callers: return JSON metadata containing a Bearer token plus the
- *   proxy and direct download URLs
- *
- * The security model here is intentionally split:
- * - Keycloak authenticates the user
- * - The middle service decides whether the user may request a file
- * - The file server trusts only the signed HMAC token, not the browser session
- *
- * Returning JSON here is what makes the future API use case possible: the middle
- * server can keep user authentication and policy decisions, while the file server
- * becomes a standalone resource server that validates only the issued file token.
- * 
  * @return never
  */
 function handle_request_file(string $fileName): never
 {
-    $user = $_SESSION['user'] ?? null;
-    if (!is_array($user)) {
-        if (request_wants_json()) {
-            json_response([
-                'error' => 'Authentication required.',
-                'login_url' => '/login',
-            ], 401);
-        }
-
-        redirect_to('/login');
+    $user = current_user_from_environment();
+    if ($user === null) {
+        fail_request(401, 'Authentication is required.');
     }
 
     $resolved = resolve_file($fileName);
@@ -282,15 +106,12 @@ function handle_request_file(string $fileName): never
     $safeFileName = basename($resolved);
     $token = build_file_token($user, $safeFileName);
     $directDownloadUrl = FILES_BASE_URL . '/protected/' . rawurlencode($safeFileName);
-    $proxyDownloadUrl = FILES_PROXY_BASE_URL . '/protected/' . rawurlencode($safeFileName);
 
     if (request_wants_json()) {
         json_response([
             'file' => $safeFileName,
             'access_token' => $token,
-            'proxy_download_url' => $proxyDownloadUrl,
             'direct_download_url' => $directDownloadUrl,
-            'error_url' => FILES_PROXY_BASE_URL . '/error.html',
             'expires_in' => FILE_TOKEN_TTL_SECONDS,
             'token_type' => 'Bearer',
         ]);
@@ -302,35 +123,129 @@ function handle_request_file(string $fileName): never
 /**
  * Renders the landing page template with normalized view data.
  *
- * The template itself stays HTML-heavy so the visual structure is easy to edit, while this function prepares the 
- * small amount of dynamic state the page needs:
- * current user, mounted files, URLs, and optional error text.
- * 
+ * `/` stays public so the landing page can explain the PoC before login. `/app`
+ * is protected in Apache and therefore renders the same template with live user
+ * identity attached.
+ *
  * @return never
  */
 function render_home(int $statusCode = 200, ?string $errorMessage = null): never
 {
     http_response_code($statusCode);
 
-    $user = $_SESSION['user'] ?? null;
-    if (!is_array($user)) {
-        $user = null;
-    }
-
+    $user = current_user_from_environment();
     $files = list_available_files();
     $requiredRole = REQUIRED_ROLE;
     $fileTokenTtl = FILE_TOKEN_TTL_SECONDS;
     $directFilesBaseUrl = FILES_BASE_URL;
-    $loginUrl = '/login';
-    $logoutUrl = '/logout';
-    $keycloakAdminUrl = KEYCLOAK_BROWSER_BASE_URL . '/admin/';
+    $loginUrl = '/app';
+    $logoutUrl = OIDC_CALLBACK_PATH . '?logout=' . rawurlencode(APP_BASE_URL . '/');
+    $keycloakAdminUrl = APP_BASE_URL . '/kc/admin/';
 
     require TEMPLATE_HOME;
     exit;
 }
 
 /**
- * Returns the list of sample files exposed through the PoC.
+ * Rebuilds the current authenticated user from Apache-provided identity data.
+ *
+ * mod_auth_openidc now performs the browser OIDC flow and exposes claims through
+ * environment variables. We use the passed access token only to extract realm
+ * roles for the local policy decision; Apache itself remains the trusted
+ * authentication component.
+ *
+ * @return array<string, mixed>|null
+ */
+function current_user_from_environment(): ?array
+{
+    $preferredUsername = first_server_value([
+        'OIDC_CLAIM_preferred_username',
+        'REDIRECT_OIDC_CLAIM_preferred_username',
+        'REMOTE_USER',
+        'REDIRECT_REMOTE_USER',
+    ]);
+
+    if ($preferredUsername === null || $preferredUsername === '') {
+        return null;
+    }
+
+    $subject = first_server_value([
+        'OIDC_CLAIM_sub',
+        'REDIRECT_OIDC_CLAIM_sub',
+    ]) ?? $preferredUsername;
+
+    $email = first_server_value([
+        'OIDC_CLAIM_email',
+        'REDIRECT_OIDC_CLAIM_email',
+    ]);
+
+    $name = first_server_value([
+        'OIDC_CLAIM_name',
+        'REDIRECT_OIDC_CLAIM_name',
+    ]);
+
+    $roles = [];
+    $accessToken = first_server_value([
+        'OIDC_access_token',
+        'REDIRECT_OIDC_access_token',
+    ]);
+
+    if ($accessToken !== null && $accessToken !== '') {
+        $claims = decode_unverified_jwt($accessToken);
+        $candidateRoles = $claims['realm_access']['roles'] ?? [];
+        if (is_array($candidateRoles)) {
+            foreach ($candidateRoles as $role) {
+                if (is_string($role) && $role !== '') {
+                    $roles[] = $role;
+                }
+            }
+        }
+    }
+
+    $roleClaim = first_server_value([
+        'OIDC_CLAIM_realm_access_roles',
+        'REDIRECT_OIDC_CLAIM_realm_access_roles',
+    ]);
+    if ($roleClaim !== null && $roleClaim !== '') {
+        foreach (preg_split('/[,\s]+/', $roleClaim) ?: [] as $role) {
+            if ($role !== '') {
+                $roles[] = $role;
+            }
+        }
+    }
+
+    $roles = array_values(array_unique($roles));
+    sort($roles);
+
+    return [
+        'sub' => $subject,
+        'name' => $name,
+        'preferred_username' => $preferredUsername,
+        'email' => $email,
+        'roles' => $roles,
+    ];
+}
+
+/**
+ * Reads the first non-empty value from $_SERVER or process environment.
+ *
+ * @param list<string> $keys
+ * @return string|null
+ */
+function first_server_value(array $keys): ?string
+{
+    foreach ($keys as $key) {
+        $value = $_SERVER[$key] ?? getenv($key);
+        if (is_string($value) && $value !== '') {
+            return $value;
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Returns the list of mounted sample files.
  *
  * @return list<string>
  */
@@ -357,15 +272,9 @@ function list_available_files(): array
 }
 
 /**
- * Resolves a user-supplied file name to a safe absolute path.
+ * Resolves a requested file name to a safe absolute path.
  *
- * This is one of the key file-safety checks in the middle service. The function normalizes separators, resolves the 
- * real path on disk, and then verifies that the resolved file still lives underneath `FILES_DIRECTORY`.
- *
- * That final containment check prevents directory traversal attempts such as`../../secret.txt`, even if the filesystem 
- * would otherwise resolve them.
- *
- * @return string|null The absolute path to the requested file if it is valid and within the base directory, or `null` if the file does not exist or is outside the allowed area.
+ * @return string|null
  */
 function resolve_file(string $name): ?string
 {
@@ -380,7 +289,6 @@ function resolve_file(string $name): ?string
         return null;
     }
 
-    // Ensure the resolved file is still within the base directory to prevent directory traversal attacks:
     if (!str_starts_with($candidate, $baseDirectory . DIRECTORY_SEPARATOR)) {
         return null;
     }
@@ -389,18 +297,15 @@ function resolve_file(string $name): ?string
 }
 
 /**
- * Builds the short-lived HS256 JWT understood by the Apache file gate.
+ * Builds the short-lived HS256 JWT understood by the file-server module.
  *
- * The token deliberately contains only the claims needed by the downstream validator:
- * - issuer and audience so the token cannot be confused with another one
- * - subject and preferred username for traceability
- * - exact file name so the token cannot be replayed for another path
- * - timestamps and a random `jti` so the token is short-lived and distinguishable
+ * For this step we keep the PoC's shared-secret token model so Apache on the
+ * file server can validate it with `OIDCOAuthVerifySharedKeys`. The token still
+ * includes the exact `file` claim even though the module-only file binding is
+ * deferred for now.
  *
- * The token is signed with a shared secret known to the middle service and the file server. This keeps the PoC
- * simple while still modeling a detached access artifact that the file server can validate without talking to Keycloak.
- * 
- * @return string The serialized JWT token that can be included in the file request URL.
+ * @param array<string, mixed> $user
+ * @return string
  */
 function build_file_token(array $user, string $fileName): string
 {
@@ -432,9 +337,8 @@ function build_file_token(array $user, string $fileName): string
 /**
  * Decodes a JWT payload without verifying its signature.
  *
- * This helper is intentionally narrow: it is used only after the middle service has already received a direct token response
- * from Keycloak. It is not meant to decide whether a third-party token is trustworthy; it only extracts claims from a token
- * that is already trusted by the current code path.
+ * This is used only for access-token claim extraction after Apache has already
+ * authenticated the user and handed us the token.
  *
  * @return array<string, mixed>
  */
@@ -459,9 +363,9 @@ function decode_unverified_jwt(string $token): array
 }
 
 /**
- * Encodes raw bytes or text as URL-safe Base64 without padding, which is the format used by JWT segments.
- * 
- * @return string The Base64URL-encoded string.
+ * Encodes raw text or bytes as Base64URL.
+ *
+ * @return string
  */
 function base64url_encode(string $raw): string
 {
@@ -469,11 +373,9 @@ function base64url_encode(string $raw): string
 }
 
 /**
- * Decodes URL-safe Base64 and restores the required padding automatically.
+ * Decodes a Base64URL segment and restores omitted padding.
  *
- * Returns `null` instead of throwing so the callers can treat malformed JWT segments as ordinary invalid input.
- * 
- * @return string|null The decoded binary string, or `null` if decoding fails due to invalid input.
+ * @return string|null
  */
 function base64url_decode(string $raw): ?string
 {
@@ -488,107 +390,9 @@ function base64url_decode(string $raw): ?string
 }
 
 /**
- * Sends an `application/x-www-form-urlencoded` POST request and expects JSON.
+ * Returns whether the caller explicitly asked for JSON.
  *
- * This is the main transport helper used for the Keycloak code-to-token exchange. It is intentionally opinionated:
- * - request body is form encoded, matching OAuth/OIDC token endpoints
- * - response is expected to be JSON
- * - non-2xx replies are converted into readable exceptions with the best available error detail from the response body
- *
- * Keeping this logic in one helper makes the callback flow easier to read and ensures Keycloak failures are surfaced to 
- * the user in a consistent form.
- *
- * @param array<string, scalar> $fields
- * @return array<string, mixed>
- */
-function http_post_form_json(string $url, array $fields): array
-{
-    $content = http_build_query($fields);
-    $context = stream_context_create([
-        'http' => [
-            'method' => 'POST',
-            'header' => implode("\r\n", [
-                'Accept: application/json',
-                'Content-Type: application/x-www-form-urlencoded',
-            ]),
-            'content' => $content,
-            'timeout' => 10,
-            'ignore_errors' => true,
-        ],
-    ]);
-
-    $body = @file_get_contents($url, false, $context);
-    $headers = $http_response_header ?? [];
-    $statusCode = http_status_code_from_headers($headers);
-
-    if ($body === false) {
-        throw new RuntimeException('Request failed for ' . $url);
-    }
-
-    $decoded = json_decode($body, true);
-    if ($statusCode < 200 || $statusCode >= 300) {
-        $detail = 'Unexpected response';
-        if (is_array($decoded)) {
-            $detail = (string) ($decoded['error_description'] ?? $decoded['error'] ?? $detail);
-        }
-        throw new RuntimeException('HTTP ' . $statusCode . ' from ' . $url . ': ' . $detail);
-    }
-
-    if (!is_array($decoded)) {
-        throw new RuntimeException('Invalid JSON response from ' . $url);
-    }
-
-    return $decoded;
-}
-
-/**
- * Extracts the numeric HTTP status code from PHP's response-header array.
- *
- * @return int The HTTP status code, or 0 if not found.
- */
-function http_status_code_from_headers(array $headers): int
-{
-    foreach ($headers as $header) {
-        if (preg_match('/^HTTP\/\S+\s+(\d{3})/', $header, $matches) === 1) {
-            return (int) $matches[1];
-        }
-    }
-
-    return 0;
-}
-
-/**
- * Builds the browser-facing Keycloak OIDC endpoint URL.
- *
- * This uses the host-visible base URL because the user's browser, not the container network, follows these redirects.
- * 
- * @return string The full URL to the specified OIDC endpoint on the Keycloak server, suitable for browser redirects.
- */
-function browser_oidc_endpoint(string $name): string
-{
-    return KEYCLOAK_BROWSER_BASE_URL . '/realms/' . rawurlencode(KEYCLOAK_REALM) . '/protocol/openid-connect/' . $name;
-}
-
-/**
- * Builds the container-internal Keycloak OIDC endpoint URL.
- *
- * This uses the Docker-network hostname so server-to-server requests do not need to leave the compose network and come back through
- * host port mappings.
- * 
- * @return string The full URL to the specified OIDC endpoint on the Keycloak server, suitable for internal server requests.
- */
-function internal_oidc_endpoint(string $name): string
-{
-    return KEYCLOAK_INTERNAL_BASE_URL . '/realms/' . rawurlencode(KEYCLOAK_REALM) . '/protocol/openid-connect/' . $name;
-}
-
-/**
- * Returns whether the caller explicitly asked for a JSON API response.
- *
- * API callers use this to request token metadata without triggering the normal
- * browser streaming flow.
- *
- * @return bool `true` when the current request should receive JSON.
+ * @return bool
  */
 function request_wants_json(): bool
 {
@@ -602,7 +406,7 @@ function request_wants_json(): bool
 }
 
 /**
- * Serializes a small JSON payload and terminates the request.
+ * Writes a JSON response and terminates the request.
  *
  * @param array<string, mixed> $payload
  * @return never
@@ -617,10 +421,7 @@ function json_response(array $payload, int $statusCode = 200): never
 }
 
 /**
- * Ends the current request in the response format expected by the caller.
- *
- * Browser navigation keeps using the HTML landing page, while XHR/fetch callers
- * receive machine-readable JSON with the same message and status code.
+ * Ends the request in HTML or JSON form.
  *
  * @return never
  */
@@ -637,9 +438,9 @@ function fail_request(int $statusCode, string $message): never
  * Fetches a protected file from the file server with a Bearer token and streams
  * the response back to the browser.
  *
- * This keeps the file token out of the browser-visible URL for normal page
- * navigation. The browser only sees the middle-service route, while the middle
- * service performs the header-based handoff to the file server on the server side.
+ * The file server becomes a pure bearer-token resource server. Browsers still do
+ * not need to attach the Authorization header themselves because the middle
+ * service performs the handoff server-to-server.
  *
  * @return never
  */
@@ -664,7 +465,7 @@ function stream_file_from_server(string $fileName, string $token): never
 
     if ($stream === false || $statusCode < 200 || $statusCode >= 300) {
         if ($statusCode === 401 || $statusCode === 403 || $statusCode === 404) {
-            redirect_to(FILES_PROXY_BASE_URL . '/error.html');
+            fail_request(403, 'The file server rejected the issued token.');
         }
 
         fail_request(502, 'The file server could not deliver the requested file.');
@@ -696,21 +497,26 @@ function stream_file_from_server(string $fileName, string $token): never
 }
 
 /**
- * Sends a redirect response and terminates execution immediately.
- * 
- * @return never
+ * Extracts the HTTP status code from PHP's response header buffer.
+ *
+ * @param list<string> $headers
+ * @return int
  */
-function redirect_to(string $url): never
+function http_status_code_from_headers(array $headers): int
 {
-    header('Location: ' . $url, true, 302);
-    exit;
+    foreach ($headers as $header) {
+        if (preg_match('/^HTTP\/\S+\s+(\d{3})/', $header, $matches) === 1) {
+            return (int) $matches[1];
+        }
+    }
+
+    return 0;
 }
 
 /**
- * Generates the local route used to request a protected file through the middle service.
- * 
- * @return string The URL path to request the specified file, which will trigger the policy checks and token minting in
- * `handle_request_file()`.
+ * Builds the local middle-service URL for requesting a protected file.
+ *
+ * @return string
  */
 function request_file_url(string $fileName): string
 {
@@ -718,9 +524,9 @@ function request_file_url(string $fileName): string
 }
 
 /**
- * HTML-escapes user-controlled or dynamic text before rendering.
- * 
- * @return string The escaped string, safe for inclusion in HTML contexts.
+ * Escapes dynamic text for HTML output.
+ *
+ * @return string
  */
 function h(string $value): string
 {

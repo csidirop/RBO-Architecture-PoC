@@ -26,7 +26,7 @@
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
       "redirectUris": [
-        "http://localhost:8080/callback"
+        "http://localhost:8080/oidc/callback"
       ],
       "webOrigins": [
         "http://localhost:8080"
@@ -45,7 +45,8 @@
         "microprofile-jwt"
       ],
       "attributes": {
-        "post.logout.redirect.uris": "http://localhost:8080/*"
+        "post.logout.redirect.uris": "http://localhost:8080/*",
+        "exclude.issuer.from.auth.response": "true"
       }
     }
   ],

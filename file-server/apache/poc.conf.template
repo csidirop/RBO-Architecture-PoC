@@ -1,0 +1,39 @@
+<VirtualHost *:80>
+    ServerAdmin webmaster@localhost
+    ServerName localhost
+    DocumentRoot /var/www/html/public
+    ErrorLog /proc/self/fd/2
+    CustomLog /proc/self/fd/1 combined
+    LogLevel warn auth_openidc:debug
+
+    OIDCCryptoPassphrase ${OIDC_CRYPTO_PASSPHRASE}
+    OIDCOAuthAcceptTokenAs header
+    OIDCOAuthVerifySharedKeys plain##${FILE_TOKEN_SECRET}
+    OIDCPassClaimsAs environment
+    OIDCOAuthRemoteUserClaim preferred_username
+
+    Alias /protected/ /data/files/
+
+    <Directory /var/www/html/public>
+        Options -Indexes
+        AllowOverride None
+        Require all granted
+    </Directory>
+
+    <Directory /data/files>
+        Options -Indexes
+        AllowOverride None
+        Require all granted
+    </Directory>
+
+    <Location /protected>
+        AuthType oauth20
+        Require valid-user
+        Require claim iss:${FILE_TOKEN_ISSUER}
+        Require claim aud:${FILE_TOKEN_AUDIENCE}
+    </Location>
+
+    ErrorDocument 401 /error.html
+    ErrorDocument 403 /error.html
+    ErrorDocument 404 /error.html
+</VirtualHost>

@@ -3,52 +3,51 @@
 This repository contains a small Docker Compose proof of concept for this flow:
 
 1. Keycloak authenticates the user with OpenID Connect.
-2. A PHP middle service receives the login result and applies a simple policy check.
-3. The middle service mints a short-lived HMAC JWT for one file.
-4. The Apache-based file server validates that token before streaming the file.
-5. If the token is missing or invalid, Apache redirects the browser to an error page.
+2. Apache on the middle server handles the browser login with `mod_auth_openidc`.
+3. A small PHP middle service receives Apache-provided identity claims and applies a simple policy check.
+4. The middle service mints a short-lived HMAC JWT for one file.
+5. Apache on the file server validates that token before serving the file.
+6. If the token is missing or invalid, Apache returns the error page.
 
 ### Overview
 
-- The PHP middle service is both the landing page and the policy decision point.
+- Apache `mod_auth_openidc` now owns the browser authentication flow on the middle server.
+- The PHP middle service is now mainly the landing page and the policy decision point.
 - The policy is only a Keycloak role check.
 - The file token is a shared-secret HMAC JWT instead of a full external PDP policy artifact.
-- Apache currently validates the token through a small PHP gate that accepts the file token only from the `Authorization: Bearer ...` header.
+- Apache on the file server validates the file token with `mod_auth_openidc` in OAuth 2.0 resource-server mode.
+- The `file` claim is still minted into the token, but exact file-to-path binding is not yet enforced by the Apache module configuration in this first cut.
 
 ## How the PoC Works
 
 The current Proof of Concept:
 
-1. Keycloak authenticates the human user for the middle service.
-2. The middle service converts that authenticated user into a short-lived file token that the Apache file server can validate on its own.
+1. Keycloak authenticates the human user for the middle server.
+2. Apache on the middle server passes the authenticated identity to PHP.
+3. The middle service converts that authenticated user into a short-lived file token that the Apache file server can validate on its own.
 
 ### Keycloak to Middle Service
 
-The browser carries the login flow:
+The browser carries the login flow, but Apache now does the OIDC work:
 
 1. The user opens the middle server on `http://localhost:8080`.
-2. The middle service sends the browser to the Keycloak authorization endpoint.
-3. After login, Keycloak redirects the browser back to `/callback` on the middle service with an authorization `code` and the original `state`.
-4. The middle service validates that `state` against the PHP session.
-5. The middle service then performs a backend call from the container to Keycloak's internal token endpoint on `http://keycloak:8080/.../token`.
-6. Keycloak returns the OIDC token response.
+2. Public content stays on `/`, while Apache protects `/app`, `/request-file/<name>`, and `/oidc/callback`.
+3. When the browser reaches a protected path, `mod_auth_openidc` redirects the browser to Keycloak.
+4. The middle Apache vhost proxies Keycloak under `/kc`, so both the browser and the module see the same provider URLs.
+5. After login, Keycloak returns to `/oidc/callback` on the middle server and `mod_auth_openidc` establishes the local Apache session.
+6. Apache passes claims and the access token to PHP through environment variables.
 7. The middle service reads:
-   - identity information from the `id_token`
-   - realm roles from the `access_token`
-8. The middle service stores a normalized user record in the PHP session.
+   - identity claims from Apache-provided claim variables
+   - realm roles by decoding the Apache-provided access token
 
 Important functions for this part:
 
 - `route_request()` in `middle-server/public/index.php`
-  - Dispatches `/login` and `/callback`
-- `handle_login()` in `middle-server/public/index.php`
-  - Creates the OIDC `state` value and redirects the browser to Keycloak
-- `handle_callback()` in `middle-server/public/index.php`
-  - Validates the callback, exchanges the code for tokens, and stores the user session
-- `http_post_form_json()` in `middle-server/public/index.php`
-  - Makes the backend token request to Keycloak
-- `browser_oidc_endpoint()` and `internal_oidc_endpoint()` in `middle-server/public/index.php`
-  - Separate browser-facing URLs from container-internal URLs
+  - Dispatches `/`, `/app`, and `/request-file/<name>`
+- `current_user_from_environment()` in `middle-server/public/index.php`
+  - Rebuilds the current user from Apache-provided claim variables and the access token
+- `decode_unverified_jwt()` in `middle-server/public/index.php`
+  - Extracts realm roles from the access token after Apache has already authenticated the browser
 
 ### Middle Service to File Server
 
@@ -57,14 +56,14 @@ When the user requests a file, the middle service becomes the simplified policy 
 1. The user opens a protected file url.
 2. The browser requests `/request-file/<name>` from the middle service.
 3. The middle service checks:
-   - a valid browser session exists
+   - Apache has already authenticated the browser
    - the requested file really exists
    - the resolved file path stays inside the mounted file directory
    - the user has the required Keycloak realm role, currently `image-reader`
 4. If the user is allowed, the middle service creates a short-lived HS256 JWT that is valid only for that exact file.
 5. The middle service supports two header-based handoff modes:
    - browser mode: `/request-file/<name>` streams the file back after a server-side Bearer-token request to the file server
-   - API mode: return JSON metadata with a Bearer token plus download URLs
+   - API mode: return JSON metadata with a Bearer token plus a direct download URL
 
 Important functions for this part:
 
@@ -91,28 +90,35 @@ The file-access JWT contains these claims:
 
 The file server does not trust the PHP session from the middle service and does not ask Keycloak anything. It trusts only the HMAC JWT created by the middle service.
 
-Apache routes `/protected/<file>` into `serve.php`, which performs the validation in stages:
+Apache now validates the file token directly in the web server:
 
-1. Read the requested file path and the incoming `Authorization: Bearer <jwt>` token.
-2. Validate the JWT structure and the HS256 signature.
-3. Validate the claims:
-   - expected issuer
-   - expected audience
-   - expiry time
-   - not-before time
-   - exact file binding through the `file` claim
-4. Resolve the final on-disk path and ensure it still points inside `/data/files`.
-5. If all checks pass, stream the file.
-6. If any check fails, redirect to `/error.html`.
+1. Apache exposes the mounted sample directory through `/protected/`.
+2. The browser never sends the bearer token itself during the normal web flow; the middle service sends it in a server-to-server `Authorization: Bearer <jwt>` request.
+3. `mod_auth_openidc` on the file server accepts bearer tokens only from the header.
+4. Apache validates:
+   - JWT signature with `OIDCOAuthVerifySharedKeys`
+   - expected issuer claim
+   - expected audience claim
+   - standard token lifetime checks such as `exp` and `nbf`
+5. If validation passes, Apache serves the static file directly from `/data/files`.
+6. If validation fails, Apache serves `/error.html`.
 
-Important functions for this part:
+Important current limitation:
 
-- `verify_hs256_jwt()` in `file-server/public/serve.php`
-  - Verifies JWT structure and signature
-- `base64url_decode_string()` in `file-server/public/serve.php`
-  - Decodes JWT segments
-- `redirect_error()` in `file-server/public/serve.php`
-  - Stops invalid requests and redirects to the error page
+- The token still carries the `file` claim, but Apache is not yet comparing that claim to the requested path in this first module-based version.
+- That means a valid short-lived token is currently accepted for the protected area in general, not yet bound to one exact file path.
+- Tight file-to-token binding is the next security step to add.
+
+Important configuration for this part:
+
+- `file-server/apache/poc.conf.template`
+  - Defines `/protected/` as an Apache OAuth 2.0 protected location
+- `OIDCOAuthAcceptTokenAs header`
+  - Ensures only `Authorization: Bearer ...` is accepted
+- `OIDCOAuthVerifySharedKeys`
+  - Verifies the HS256 signature with the shared secret from the middle service
+- `Require claim iss:...` and `Require claim aud:...`
+  - Restrict accepted tokens to the expected issuer and audience
 
 ### Example Token
 
@@ -147,9 +153,10 @@ Below is the decoded payload of that token, which is the second part of the JWT:
 
 ### How to Inspect a Token
 
-To inspect a live token in the browser:
+To inspect a live token in this module-based version:
 
-1. Open a protected file request and copy the `Authorization: Bearer ...` header on the request to `http://localhost:8090/protected/...`.
+1. Request a token in JSON form from the middle service or generate one manually from the CLI.
+2. Use that token in a direct request to `http://localhost:8090/protected/...`.
 2. Split it by `.` into three parts.
 3. Decode the first part from Base64URL to JSON.
 4. Decode the second part from Base64URL to JSON.
@@ -212,7 +219,7 @@ docker compose up --build
 Then open:
 
 - `http://localhost:8080` for the middle-service landing page
-- `http://localhost:8081/admin/` for the Keycloak admin console
+- `http://localhost:8081/kc/admin/` for the Keycloak admin console
 - `http://localhost:8090` for the Apache landing page
 
 The middle-service landing page includes quick links to the protected sample files.
@@ -234,7 +241,8 @@ The middle-service landing page includes quick links to the protected sample fil
 
 ## Notes
 
-- https://www.keycloak.org/securing-apps/oidc-layers          Keycloak OIDC docs
-- https://openid.net/specs/openid-connect-core-1_0-18.html    OIDC spec
-- https://github.com/jumbojett/OpenID-Connect-PHP             PHP implementation of OIDC client flows, used for the middle service login
-- https://github.com/googleapis/php-jwt                       PHP library for creating and verifying JWTs, used for the file token implementation
+- https://www.keycloak.org/securing-apps/mod-auth-openidc                      Keycloak guide for Apache `mod_auth_openidc`
+- https://github.com/OpenIDC/mod_auth_openidc                                  Apache module used for browser OIDC on the middle server
+- https://github-wiki-see.page/m/OpenIDC/mod_auth_openidc/wiki/OAuth-2.0-Resource-Server
+  Resource-server mode reference used on the file server
+- https://github.com/OpenIDC/mod_auth_openidc/wiki/Authorization               Claims-based authorization reference

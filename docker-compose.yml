@@ -5,6 +5,9 @@ services:
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:-admin}
+      KC_HTTP_RELATIVE_PATH: /kc
+      KC_HOSTNAME: ${KC_HOSTNAME:-http://localhost:8080/kc}
+      KC_PROXY_HEADERS: xforwarded
     volumes:
       - ./keycloak/realm-import:/opt/keycloak/data/import:ro
     ports:
@@ -16,13 +19,13 @@ services:
     depends_on:
       - keycloak
     environment:
-      APP_SECRET_KEY: ${APP_SECRET_KEY:-replace-this-session-secret}
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8080}
       KEYCLOAK_BROWSER_BASE_URL: ${KEYCLOAK_BROWSER_BASE_URL:-http://localhost:8081}
-      KEYCLOAK_INTERNAL_BASE_URL: ${KEYCLOAK_INTERNAL_BASE_URL:-http://keycloak:8080}
+      KEYCLOAK_INTERNAL_BASE_URL: ${KEYCLOAK_INTERNAL_BASE_URL:-http://keycloak:8080/kc}
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:-image-poc}
       KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-middle-poc}
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-middle-secret-please-change}
+      OIDC_CRYPTO_PASSPHRASE: ${OIDC_CRYPTO_PASSPHRASE:-replace-this-apache-oidc-secret}
       REQUIRED_ROLE: ${REQUIRED_ROLE:-image-reader}
       FILES_BASE_URL: ${FILES_BASE_URL:-http://localhost:8090}
       FILES_INTERNAL_BASE_URL: ${FILES_INTERNAL_BASE_URL:-http://file-server}
@@ -40,6 +43,7 @@ services:
     build:
       context: ./file-server
     environment:
+      OIDC_CRYPTO_PASSPHRASE: ${OIDC_CRYPTO_PASSPHRASE:-replace-this-apache-oidc-secret}
       FILE_TOKEN_SECRET: ${FILE_TOKEN_SECRET:-replace-this-hmac-secret}
       FILE_TOKEN_ISSUER: ${FILE_TOKEN_ISSUER:-middle-poc}
       FILE_TOKEN_AUDIENCE: ${FILE_TOKEN_AUDIENCE:-image-server}

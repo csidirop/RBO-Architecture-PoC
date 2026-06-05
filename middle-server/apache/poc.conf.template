@@ -1,0 +1,47 @@
+<VirtualHost *:80 *:8080>
+    ServerAdmin webmaster@localhost
+    ServerName localhost
+    DocumentRoot /var/www/html/public
+    ProxyPreserveHost On
+    ErrorLog /proc/self/fd/2
+    CustomLog /proc/self/fd/1 combined
+    LogLevel warn auth_openidc:debug
+
+    OIDCCryptoPassphrase ${OIDC_CRYPTO_PASSPHRASE}
+    OIDCProviderMetadataURL ${KEYCLOAK_INTERNAL_BASE_URL}/realms/${KEYCLOAK_REALM}/.well-known/openid-configuration
+    OIDCClientID ${KEYCLOAK_CLIENT_ID}
+    OIDCClientSecret ${KEYCLOAK_CLIENT_SECRET}
+    OIDCRedirectURI /oidc/callback
+    OIDCRemoteUserClaim preferred_username
+    OIDCScope "openid profile email roles"
+    OIDCCookiePath /
+    OIDCDefaultURL /app
+    OIDCPassClaimsAs environment
+    OIDCPassAccessToken On
+    OIDCPassIDTokenAs payload
+
+    ProxyPass /kc/ http://keycloak:8080/kc/
+    ProxyPassReverse /kc/ http://keycloak:8080/kc/
+
+    <Directory /var/www/html/public>
+        Options -Indexes
+        AllowOverride None
+        Require all granted
+        FallbackResource /index.php
+    </Directory>
+
+    <Location /app>
+        AuthType openid-connect
+        Require valid-user
+    </Location>
+
+    <LocationMatch "^/request-file(?:/.*)?$">
+        AuthType openid-connect
+        Require valid-user
+    </LocationMatch>
+
+    <Location /oidc/callback>
+        AuthType openid-connect
+        Require valid-user
+    </Location>
+</VirtualHost>
