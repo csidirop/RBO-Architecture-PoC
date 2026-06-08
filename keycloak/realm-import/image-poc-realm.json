@@ -26,10 +26,27 @@
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
       "redirectUris": [
-        "http://localhost:8080/callback"
+        "http://localhost:8080/callback",
+        "http://localhost:8080/oidc/callback"
       ],
       "webOrigins": [
         "http://localhost:8080"
+      ],
+      "protocolMappers": [
+        {
+          "name": "realm roles for middle service",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "access.token.claim": "true",
+            "claim.name": "realm_access.roles",
+            "id.token.claim": "true",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
       ],
       "defaultClientScopes": [
         "web-origins",

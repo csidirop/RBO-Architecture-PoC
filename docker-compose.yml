@@ -12,7 +12,8 @@ services:
 
   middle:
     build:
-      context: ./middle-server
+      context: .
+      dockerfile: ./middle-server/Dockerfile
     depends_on:
       - keycloak
     environment:
@@ -24,9 +25,8 @@ services:
       KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-middle-poc}
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-middle-secret-please-change}
       REQUIRED_ROLE: ${REQUIRED_ROLE:-image-reader}
-      FILES_BASE_URL: ${FILES_BASE_URL:-http://localhost:8090}
       FILES_DIRECTORY: /data/files
-      FILE_TOKEN_SECRET: ${FILE_TOKEN_SECRET:-replace-this-hmac-secret}
+      FILE_TOKEN_PRIVATE_KEY_PATH: /run/secrets/file-token-private.pem
       FILE_TOKEN_TTL_SECONDS: ${FILE_TOKEN_TTL_SECONDS:-60}
       FILE_TOKEN_ISSUER: ${FILE_TOKEN_ISSUER:-middle-poc}
       FILE_TOKEN_AUDIENCE: ${FILE_TOKEN_AUDIENCE:-image-server}
@@ -37,9 +37,10 @@ services:
 
   file-server:
     build:
-      context: ./file-server
+      context: .
+      dockerfile: ./file-server/Dockerfile
     environment:
-      FILE_TOKEN_SECRET: ${FILE_TOKEN_SECRET:-replace-this-hmac-secret}
+      FILE_TOKEN_PUBLIC_CERT_PATH: /etc/apache2/file-token-public.crt
       FILE_TOKEN_ISSUER: ${FILE_TOKEN_ISSUER:-middle-poc}
       FILE_TOKEN_AUDIENCE: ${FILE_TOKEN_AUDIENCE:-image-server}
     volumes:
