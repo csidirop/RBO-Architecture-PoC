@@ -16,6 +16,7 @@ services:
       dockerfile: ./middle-server/Dockerfile
     depends_on:
       - keycloak
+      - file-server
     environment:
       APP_SECRET_KEY: ${APP_SECRET_KEY:-replace-this-session-secret}
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8080}
@@ -24,6 +25,7 @@ services:
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:-image-poc}
       KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-middle-poc}
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-middle-secret-please-change}
+      CANTALOUPE_BASE_URL: ${CANTALOUPE_BASE_URL:-http://localhost:8182}
       REQUIRED_ROLE: ${REQUIRED_ROLE:-image-reader}
       FILES_DIRECTORY: /data/files
       FILE_TOKEN_PRIVATE_KEY_PATH: /run/secrets/file-token-private.pem
@@ -47,3 +49,23 @@ services:
       - ./sample-files:/data/files:ro
     ports:
       - "8090:80"
+
+  cantaloupe:
+    image: islandora/cantaloupe:6.4.3
+    tty: true
+    environment:
+      CANTALOUPE_HTTP_PORT: 8182
+      CANTALOUPE_HTTPS_ENABLED: "false"
+      CANTALOUPE_SOURCE_STATIC: FilesystemSource
+      CANTALOUPE_FILESYSTEMSOURCE_LOOKUP_STRATEGY: BasicLookupStrategy
+      CANTALOUPE_FILESYSTEMSOURCE_BASICLOOKUPSTRATEGY_PATH_PREFIX: /data/files/protected/
+      CANTALOUPE_ENDPOINT_IIIF_1_ENABLED: "false"
+      CANTALOUPE_ENDPOINT_IIIF_2_ENABLED: "true"
+      CANTALOUPE_ENDPOINT_IIIF_3_ENABLED: "false"
+      CANTALOUPE_LOG_APPLICATION_LEVEL: info
+      CANTALOUPE_HEAP_MIN: 512M
+      CANTALOUPE_HEAP_MAX: 1G
+    volumes:
+      - ./sample-files:/data/files:ro
+    ports:
+      - "8182:8182"

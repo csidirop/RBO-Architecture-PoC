@@ -121,6 +121,28 @@
         margin-bottom: 10px;
       }
 
+      .file-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 12px;
+      }
+
+      .file-link {
+        display: inline-block;
+        text-decoration: none;
+        border-radius: 10px;
+        padding: 9px 12px;
+        background: var(--accent);
+        color: #fff;
+      }
+
+      .file-link.secondary {
+        background: transparent;
+        color: var(--accent);
+        border: 1px solid var(--accent);
+      }
+
       .actions a.secondary {
         background: transparent;
         color: var(--accent);
@@ -151,8 +173,8 @@
         <h1>Image Access PoC</h1>
         <p>
           Keycloak authenticates the user, this PHP middle service applies the policy,
-          and Apache forwards file-specific bearer tokens to the file server only
-          after this service has approved the request.
+          and Apache forwards file-specific bearer tokens to the Apache file server
+          only after this service has approved the request.
         </p>
         <p class="meta">
           user must have the role <code><?= h($requiredRole) ?></code>.
@@ -185,42 +207,71 @@
             <li>User signs in with Keycloak.</li>
             <li>Middle service checks the Keycloak role.</li>
             <li>Middle service issues a short-lived file token in a proxy cookie.</li>
-            <li>Apache forwards it as a bearer header and the file server streams the file.</li>
+            <li>Apache forwards it as a bearer header and the file server serves the image.</li>
           </ol>
         </article>
       </section>
 
       <!-- Files -->
-       <!-- Protected Files -->
       <section class="grid">
         <article class="box">
-          <h2>Protected Files</h2>
+          <h2>Protected Files on File Server</h2>
           <p class="meta">
-            Links for quick testing. The links will start the Keycloak login flow first if the user is not signed in yet.
+            These links use the full Keycloak and middle-service flow before Apache forwards the file token to the file server.
           </p>
           <p class="meta">
-            If the role is missing or dont matches, the request stops here.
+            If the role is missing or does not match, the request stops here.
           </p>
-          <!-- Build file list from $protectedFiles array: -->
           <?php if ($protectedFiles !== []): ?>
           <div class="file-list">
             <?php foreach ($protectedFiles as $file): ?>
-            <a class="file-box" href="<?= h(request_file_url(PROTECTED_FILES_SUBDIRECTORY . '/' . $file)) ?>">
+            <div class="file-box">
               <strong><?= h($file) ?></strong>
-              <span class="meta">Open "protected" file</span>
-            </a>
+              <span class="meta">Protected file-server request through the middle service.</span>
+              <div class="file-actions">
+                <a class="file-link" href="<?= h(request_file_url(PROTECTED_FILES_SUBDIRECTORY . '/' . $file)) ?>">
+                  Open "protected" file
+                </a>
+              </div>
+            </div>
             <?php endforeach; ?>
           </div>
           <?php else: ?> <p>No sample files are mounted.</p> <?php endif; ?>
         </article>
-        <!-- Unprotected Files -->
+
+        <article class="box">
+          <h2>Protected Files on Cantaloupe</h2>
+          <p class="meta">
+            These links open the same sample images directly from Cantaloupe on port <code>8182</code>.
+          </p>
+          <p class="meta">
+            Use the image URL for a regular rendered image, or <code>info.json</code> for the IIIF metadata document.
+          </p>
+          <?php if ($protectedFiles !== []): ?>
+          <div class="file-list">
+            <?php foreach ($protectedFiles as $file): ?>
+            <div class="file-box">
+              <strong><?= h($file) ?></strong>
+              <span class="meta">Direct Cantaloupe image and IIIF metadata links.</span>
+              <div class="file-actions">
+                <a class="file-link" href="<?= h(cantaloupe_image_url($file)) ?>" target="_blank" rel="noreferrer">
+                  Open Cantaloupe image
+                </a>
+                <a class="file-link secondary" href="<?= h(cantaloupe_info_url($file)) ?>" target="_blank" rel="noreferrer">
+                  Open Cantaloupe info.json
+                </a>
+              </div>
+            </div>
+            <?php endforeach; ?>
+          </div>
+          <?php else: ?> <p>No sample files are mounted.</p> <?php endif; ?>
+        </article>
+
         <article class="box">
           <h2>Unprotected Files</h2>
           <p class="meta">
             Unprotected links for quick testing.
           </p>
-          </br></br></br>
-          <!-- Build file list from $unprotectedFiles array: -->
           <?php if ($unprotectedFiles !== []): ?>
           <div class="file-list">
             <?php foreach ($unprotectedFiles as $file): ?>

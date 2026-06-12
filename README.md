@@ -1,10 +1,12 @@
 # Keycloak to Middle Service to Apache File Server PoC
 
-This repository contains a Docker Compose proof of concept for a file-access flow with three parts:
+This repository contains a Docker Compose proof of concept for a protected file-access flow with three main parts:
 
 1. [Keycloak](#keycloak) authenticates the user.
 2. The [PHP middle service](#middle-service) decides whether that user may request a specific file.
 3. The [file server](#file-server) gets the forwarded file-specific bearer token from Apache, where the `mod_auth_openidc` module validates it before PHP streams the bytes.
+
+An additional `cantaloupe` container is included as a separate image-server option for local testing. It is not wired into the middle-service auth flow.
 
 ### Lineout
 
@@ -40,6 +42,13 @@ This repository contains a Docker Compose proof of concept for a file-access flo
 - Protects `/protected/<file>` with Apache auth
 - Uses `mod_auth_openidc` to validate the JWT from the `Authorization` header
 - Uses PHP only for safe path resolution and file streaming
+
+### Cantaloupe
+
+- Runs on `http://localhost:8182`
+- Serves images directly from the mounted `sample-files/protected` directory
+- Is separate from the Keycloak and middle-service flow in this version
+- Can be tested directly with Cantaloupe's IIIF endpoint
 
 ## Request Flow
 
@@ -81,7 +90,7 @@ This repository contains a Docker Compose proof of concept for a file-access flo
 
 ### 4. File Server Authorization
 
-Apache on the file server now performs token verification before PHP runs:
+Apache on the file server performs token verification before PHP runs:
 
 1. Accept only bearer tokens from the `Authorization` header.
 2. Validate the RS256 signature with the configured public certificate.
@@ -93,6 +102,28 @@ If any of those checks fail, Apache returns the generic error page.
 
 If they pass, `serve.php` resolves the path safely and streams the file.
 
+## Cantaloupe Access
+
+Cantaloupe is exposed directly on port `8182` and is not protected by the middle-service token flow in this version.
+
+Regular image URL:
+
+```text
+http://localhost:8182/iiif/2/1652998101_0002.jpg/full/full/0/default.jpg
+```
+
+IIIF metadata URL:
+
+```text
+http://localhost:8182/iiif/2/1652998101_0002.jpg/info.json
+```
+
+Those identifiers map to:
+
+```text
+sample-files/protected/
+```
+
 ### 5. Browser Logout
 
 1. PHP expires the local session cookie and any file-token cookies issued during that session.
@@ -102,6 +133,8 @@ If they pass, `serve.php` resolves the path safely and streams the file.
 
 ## Relevant Files
 
+- `docker-compose.yml`
+  - service definitions for Keycloak, middle, file-server, and Cantaloupe
 - `middle-server/public/index.php`
   - browser login flow
   - policy decision
@@ -128,6 +161,7 @@ Then open:
 - `http://localhost:8080` for the middle-service landing page
 - `http://localhost:8081/admin/` for the Keycloak admin console
 - `http://localhost:8090` for the public file-server landing page
+- `http://localhost:8182/iiif/2/1652998101_0002.jpg/full/full/0/default.jpg` for a direct Cantaloupe image test
 
 ### Demo Users
 
@@ -138,8 +172,16 @@ Then open:
 - `admin / admin`
   - Keycloak administrator account for local development.
 
+## Notes
+
+- The file-access JWT is intentionally local to this PoC and is signed by the middle service with a private key that is paired with the file server's public certificate.
+- The token is no longer visible in browser URLs.
+- Direct requests to `http://localhost:8090/protected/<file>` without a valid bearer token are rejected by Apache.
+- Cantaloupe is currently just a separate direct server option; it is not yet integrated into the middle-service authorization flow.
+
 ## References
 
 - https://github.com/OpenIDC/mod_auth_openidc
+- https://cantaloupe-project.github.io/
 - https://www.keycloak.org/securing-apps/oidc-layers
 - https://openid.net/specs/openid-connect-core-1_0.html

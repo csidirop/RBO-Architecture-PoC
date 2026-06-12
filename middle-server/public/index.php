@@ -17,6 +17,7 @@ function env_value(string $name, string $default): string
 // Define all configuration constants at the top of the script for easy reference and modification:
 define('APP_BASE_URL', rtrim(env_value('APP_BASE_URL', 'http://localhost:8080'), '/'));
 define('KEYCLOAK_BROWSER_BASE_URL', rtrim(env_value('KEYCLOAK_BROWSER_BASE_URL', 'http://localhost:8081'), '/'));
+define('CANTALOUPE_BASE_URL', rtrim(env_value('CANTALOUPE_BASE_URL', 'http://localhost:8182'), '/'));
 define('REQUIRED_ROLE', env_value('REQUIRED_ROLE', 'image-reader'));
 define('FILES_DIRECTORY', env_value('FILES_DIRECTORY', '/data/files'));
 define('UNPROTECTED_FILES_SUBDIRECTORY', env_value('UNPROTECTED_FILES_SUBDIRECTORY', 'unprotected'));
@@ -129,6 +130,26 @@ function handle_logout(): never
 }
 
 /**
+ * Stops the request when the authenticated user lacks the configured Keycloak role.
+ *
+ * @param array<string, mixed> $user
+ */
+function assert_user_has_required_role(array $user): void
+{
+    $roles = $user['roles'] ?? [];
+    if (!is_array($roles)) {
+        $roles = [];
+    }
+
+    if (REQUIRED_ROLE !== '' && !in_array(REQUIRED_ROLE, $roles, true)) {
+        render_home(
+            403,
+            'Authenticated, but policy denied access. Required role: ' . REQUIRED_ROLE . '.'
+        );
+    }
+}
+
+/**
  * Expires the PHP session cookie in the browser as well as destroying server-side state.
  */
 function clear_php_session_cookie(): void
@@ -202,21 +223,11 @@ function handle_request_file(string $fileName): never
         render_home(404, 'Requested file not found.');
     }
 
-    $roles = $user['roles'] ?? [];
-    if (!is_array($roles)) {
-        $roles = [];
-    }
-
-    if (REQUIRED_ROLE !== '' && !in_array(REQUIRED_ROLE, $roles, true)) {
-        render_home(
-            403,
-            'Authenticated, but policy denied access. Required role: ' . REQUIRED_ROLE . '.'
-        );
-    }
+    assert_user_has_required_role($user);
 
     try {
         $token = build_file_token($user, $resolvedFileName);
-        issue_file_token_cookie($token, $resolvedFileName);
+        issue_access_token_cookie($token, proxy_file_cookie_path($resolvedFileName));
     } catch (RuntimeException $exception) {
         render_home(500, 'Failed to prepare the file access hand-off.');
     }
@@ -569,7 +580,7 @@ function apache_oidc_logout_url(string $returnPath): string
  * The cookie is limited to the target proxy path so the browser sends it only on the
  * follow-up request that fetches the protected file through Apache.
  */
-function issue_file_token_cookie(string $token, string $fileName): void
+function issue_access_token_cookie(string $token, string $cookiePath): void
 {
     $cookiePath = file_token_cookie_path($fileName);
     $success = setcookie(
@@ -616,11 +627,35 @@ function file_token_cookie_path(string $fileName): string
 }
 
 /**
+ * Builds the cookie path for a direct protected-file request.
+ */
+function proxy_file_cookie_path(string $fileName): string
+{
+    return proxy_file_url($fileName);
+}
+
+/**
  * Builds the same-origin URL for files that bypass the protected token flow.
  */
 function unprotected_file_url(string $fileName): string
 {
     return UNPROTECTED_FILE_PROXY_PATH_PREFIX . '/' . encode_url_path($fileName);
+}
+
+/**
+ * Builds the direct Cantaloupe image URL for a protected file.
+ */
+function cantaloupe_image_url(string $fileName): string
+{
+    return CANTALOUPE_BASE_URL . '/iiif/2/' . encode_url_path($fileName) . '/full/full/0/default.jpg';
+}
+
+/**
+ * Builds the direct Cantaloupe IIIF info.json URL for a protected file.
+ */
+function cantaloupe_info_url(string $fileName): string
+{
+    return CANTALOUPE_BASE_URL . '/iiif/2/' . encode_url_path($fileName) . '/info.json';
 }
 
 /**
