@@ -93,6 +93,13 @@ If any of those checks fail, Apache returns the generic error page.
 
 If they pass, `serve.php` resolves the path safely and streams the file.
 
+### 5. Browser Logout
+
+1. PHP expires the local session cookie and any file-token cookies issued during that session.
+2. The browser is sent to the `mod_auth_openidc` logout URL.
+3. `mod_auth_openidc` clears its own session and forwards the logout to Keycloak's end-session endpoint.
+4. Keycloak clears the SSO session and redirects the browser back to the landing page.
+
 ## Relevant Files
 
 - `middle-server/public/index.php`
@@ -103,6 +110,7 @@ If they pass, `serve.php` resolves the path safely and streams the file.
 - `middle-server/apache/poc.conf`
   - same-origin reverse proxy
   - cookie-to-authorization-header translation
+  - Keycloak login/logout endpoint configuration
 - `file-server/apache/poc.conf`
   - `mod_auth_openidc` resource-server configuration
   - issuer and audience enforcement

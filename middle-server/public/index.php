@@ -27,6 +27,7 @@ define('FILE_TOKEN_ISSUER', env_value('FILE_TOKEN_ISSUER', 'middle-poc')); // Th
 define('FILE_TOKEN_AUDIENCE', env_value('FILE_TOKEN_AUDIENCE', 'image-server')); // The audience claim in the file token, which should match what the file server expects
 define('UNPROTECTED_FILE_PROXY_PATH_PREFIX', '/unprotected');
 define('FILE_PROXY_PATH_PREFIX', '/file-proxy');
+define('FILE_TOKEN_COOKIE_NAME', 'file_access_token');
 define('TEMPLATE_HOME', dirname(__DIR__) . DIRECTORY_SEPARATOR . 'templates' . DIRECTORY_SEPARATOR . 'index.html');
 
 session_name('middle-poc-session');
@@ -115,12 +116,58 @@ function handle_login(): never
  */
 function handle_logout(): never
 {
+    clear_issued_file_token_cookies();
+
     $_SESSION = [];
+    clear_php_session_cookie();
+
     if (session_id() !== '') {
         session_destroy();
     }
 
     redirect_to(apache_oidc_logout_url('/'));
+}
+
+/**
+ * Expires the PHP session cookie in the browser as well as destroying server-side state.
+ */
+function clear_php_session_cookie(): void
+{
+    if (session_id() === '') {
+        return;
+    }
+
+    $params = session_get_cookie_params();
+    $options = [
+        'expires' => time() - 3600,
+        'path' => ($params['path'] ?? '') !== '' ? $params['path'] : '/',
+        'secure' => (bool) ($params['secure'] ?? false),
+        'httponly' => (bool) ($params['httponly'] ?? true),
+        'samesite' => ($params['samesite'] ?? '') !== '' ? $params['samesite'] : 'Lax',
+    ];
+
+    if (($params['domain'] ?? '') !== '') {
+        $options['domain'] = $params['domain'];
+    }
+
+    setcookie(session_name(), '', $options);
+}
+
+/**
+ * Expires path-scoped file-token cookies issued during this browser session.
+ */
+function clear_issued_file_token_cookies(): void
+{
+    $paths = $_SESSION['file_token_cookie_paths'] ?? [];
+    if (!is_array($paths)) {
+        return;
+    }
+
+    foreach (array_keys($paths) as $path) {
+        if (is_string($path) && str_starts_with($path, FILE_PROXY_PATH_PREFIX . '/')) {
+            expire_file_token_cookie($path);
+        }
+    }
 }
 
 /**
@@ -174,7 +221,7 @@ function handle_request_file(string $fileName): never
         render_home(500, 'Failed to prepare the file access hand-off.');
     }
 
-    $targetUrl = proxy_file_url($resolvedFileName);
+    $targetUrl = file_token_cookie_path($resolvedFileName); //Builds the same-origin proxy URL that will forward the file request to the file server.
 
     redirect_to($targetUrl);
 }
@@ -524,14 +571,14 @@ function apache_oidc_logout_url(string $returnPath): string
  */
 function issue_file_token_cookie(string $token, string $fileName): void
 {
-    $encodedFileName = encode_url_path($fileName);
+    $cookiePath = file_token_cookie_path($fileName);
     $success = setcookie(
-        'file_access_token',
+        FILE_TOKEN_COOKIE_NAME,
         $token,
         [
             'expires' => time() + FILE_TOKEN_TTL_SECONDS,
             'httponly' => true,
-            'path' => FILE_PROXY_PATH_PREFIX . '/' . $encodedFileName,
+            'path' => $cookiePath,
             'samesite' => 'Lax',
         ]
     );
@@ -539,12 +586,31 @@ function issue_file_token_cookie(string $token, string $fileName): void
     if ($success === false) {
         throw new RuntimeException('Failed to issue the file access cookie.');
     }
+
+    $_SESSION['file_token_cookie_paths'][$cookiePath] = true;
 }
 
 /**
- * Builds the same-origin proxy URL that will forward the file request to the file server.
+ * Expires a path-scoped file-token cookie in the browser.
  */
-function proxy_file_url(string $fileName): string
+function expire_file_token_cookie(string $path): void
+{
+    setcookie(
+        FILE_TOKEN_COOKIE_NAME,
+        '',
+        [
+            'expires' => time() - 3600,
+            'httponly' => true,
+            'path' => $path,
+            'samesite' => 'Lax',
+        ]
+    );
+}
+
+/**
+ * Returns the exact browser path used for the file-token cookie.
+ */
+function file_token_cookie_path(string $fileName): string
 {
     return FILE_PROXY_PATH_PREFIX . '/' . encode_url_path($fileName);
 }
