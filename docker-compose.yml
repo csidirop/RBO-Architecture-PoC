@@ -5,6 +5,8 @@ services:
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:-admin}
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-middle-secret-please-change}
+      UBMA_IDP_CLIENT_SECRET: ${UBMA_IDP_CLIENT_SECRET:-replace-this-idp-secret}
     volumes:
       - ./keycloak/realm-import:/opt/keycloak/data/import:ro
     ports:
